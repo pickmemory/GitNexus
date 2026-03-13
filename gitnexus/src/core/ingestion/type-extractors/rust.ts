@@ -6,6 +6,20 @@ const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
   'let_declaration',
 ]);
 
+/** Walk up the AST to find the enclosing impl block and extract the implementing type name. */
+const findEnclosingImplType = (node: SyntaxNode): string | undefined => {
+  let current = node.parent;
+  while (current) {
+    if (current.type === 'impl_item') {
+      // The 'type' field holds the implementing type (e.g., `impl User { ... }`)
+      const typeNode = current.childForFieldName('type');
+      if (typeNode) return extractSimpleTypeName(typeNode);
+    }
+    current = current.parent;
+  }
+  return undefined;
+};
+
 /** Rust: let x: Foo = ... */
 const extractDeclaration: TypeBindingExtractor = (node: SyntaxNode, env: Map<string, string>): void => {
   const pattern = node.childForFieldName('pattern');
@@ -18,6 +32,8 @@ const extractDeclaration: TypeBindingExtractor = (node: SyntaxNode, env: Map<str
 
 /** Rust: let x = User::new() or let x = User::default() */
 const extractInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<string, string>, _classNames: ReadonlySet<string>): void => {
+  // Skip if there's an explicit type annotation — Tier 0 already handled it
+  if (node.childForFieldName('type') !== null) return;
   const pattern = node.childForFieldName('pattern');
   const value = node.childForFieldName('value');
   if (!pattern || !value) return;
@@ -31,7 +47,10 @@ const extractInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<str
   if (!nameField || (nameField.text !== 'new' && nameField.text !== 'default')) return;
   const pathField = func.childForFieldName('path');
   if (!pathField) return;
-  const typeName = extractSimpleTypeName(pathField);
+  const rawType = extractSimpleTypeName(pathField);
+  if (!rawType) return;
+  // Resolve Self to the actual struct/enum name from the enclosing impl block
+  const typeName = rawType === 'Self' ? findEnclosingImplType(node) : rawType;
   const varName = extractVarName(pattern);
   if (varName && typeName) env.set(varName, typeName);
 };

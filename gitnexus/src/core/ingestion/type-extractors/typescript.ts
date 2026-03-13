@@ -41,7 +41,7 @@ const extractParameter: ParameterExtractor = (node: SyntaxNode, env: Map<string,
   if (varName && typeName) env.set(varName, typeName);
 };
 
-/** TypeScript: const x = new User(), let x = new ns.Service() */
+/** TypeScript: const x = new User() — infer type from new_expression */
 const extractInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<string, string>, _classNames: ReadonlySet<string>): void => {
   for (let i = 0; i < node.namedChildCount; i++) {
     const declarator = node.namedChild(i);

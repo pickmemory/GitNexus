@@ -510,13 +510,60 @@ class RepoService {
       });
 
       it('prefers explicit annotation over constructor inference', () => {
+        // Uses DIFFERENT types to catch Tier 0 overwrite bugs
         const tree = parse(`
           fn main() {
-            let user: User = User::new();
+            let user: BaseUser = Admin::new();
+          }
+        `, Rust);
+        const env = buildTypeEnv(tree, 'rust');
+        expect(flatGet(env, 'user')).toBe('BaseUser');
+      });
+
+      it('infers type from let mut with ::new()', () => {
+        const tree = parse(`
+          fn main() {
+            let mut user = User::new();
           }
         `, Rust);
         const env = buildTypeEnv(tree, 'rust');
         expect(flatGet(env, 'user')).toBe('User');
+      });
+
+      it('resolves Self::new() to enclosing impl type', () => {
+        const tree = parse(`
+          struct User {}
+          impl User {
+            fn create() -> Self {
+              let instance = Self::new();
+            }
+          }
+        `, Rust);
+        const env = buildTypeEnv(tree, 'rust');
+        expect(flatGet(env, 'instance')).toBe('User');
+      });
+
+      it('resolves Self::default() to enclosing impl type', () => {
+        const tree = parse(`
+          struct Config {}
+          impl Config {
+            fn make() -> Self {
+              let cfg = Self::default();
+            }
+          }
+        `, Rust);
+        const env = buildTypeEnv(tree, 'rust');
+        expect(flatGet(env, 'cfg')).toBe('Config');
+      });
+
+      it('skips Self::new() outside impl block', () => {
+        const tree = parse(`
+          fn main() {
+            let x = Self::new();
+          }
+        `, Rust);
+        const env = buildTypeEnv(tree, 'rust');
+        expect(flatGet(env, 'x')).toBeUndefined();
       });
 
       it('does not infer from Type::other_method()', () => {
@@ -537,6 +584,41 @@ class RepoService {
         `, PHP.php);
         const env = buildTypeEnv(tree, 'php');
         expect(flatGet(env, '$user')).toBe('User');
+      });
+
+      it('resolves new self() and new static() to enclosing class', () => {
+        const tree = parse(`<?php
+          class Foo {
+            function make() {
+              $a = new self();
+              $b = new static();
+            }
+          }
+        `, PHP.php);
+        const env = buildTypeEnv(tree, 'php');
+        expect(flatGet(env, '$a')).toBe('Foo');
+        expect(flatGet(env, '$b')).toBe('Foo');
+      });
+
+      it('resolves new parent() to superclass', () => {
+        const tree = parse(`<?php
+          class Bar {}
+          class Foo extends Bar {
+            function make() {
+              $p = new parent();
+            }
+          }
+        `, PHP.php);
+        const env = buildTypeEnv(tree, 'php');
+        expect(flatGet(env, '$p')).toBe('Bar');
+      });
+
+      it('skips self/static/parent outside class scope', () => {
+        const tree = parse(`<?php
+          $a = new self();
+        `, PHP.php);
+        const env = buildTypeEnv(tree, 'php');
+        expect(flatGet(env, '$a')).toBeUndefined();
       });
 
       it('does not infer from non-new assignments', () => {

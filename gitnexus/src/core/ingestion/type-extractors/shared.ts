@@ -80,6 +80,11 @@ export const extractVarName = (node: SyntaxNode): string | undefined => {
     const nameChild = node.childForFieldName('name');
     if (nameChild) return extractVarName(nameChild);
   }
+  // Rust: let mut x = ... — mut_pattern wraps an identifier
+  if (node.type === 'mut_pattern') {
+    const inner = node.firstNamedChild;
+    if (inner) return extractVarName(inner);
+  }
   return undefined;
 };
 
