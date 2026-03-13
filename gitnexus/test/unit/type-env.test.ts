@@ -441,6 +441,13 @@ class RepoService {
         const env = buildTypeEnv(tree, 'typescript');
         expect(flatSize(env)).toBe(0);
       });
+
+      it('handles mixed annotated + unannotated declarators', () => {
+        const tree = parse('const a: A = getA(), b = new B();', TypeScript.typescript);
+        const env = buildTypeEnv(tree, 'typescript');
+        expect(flatGet(env, 'a')).toBe('A');
+        expect(flatGet(env, 'b')).toBe('B');
+      });
     });
 
     describe('Java', () => {
@@ -552,8 +559,9 @@ class RepoService {
         expect(flatGet(env, 'user')).toBe('User');
       });
 
-      it('infers type from auto with direct construction', () => {
+      it('infers type from auto with direct construction when class is defined', () => {
         const tree = parse(`
+          class User {};
           void run() {
             auto user = User();
           }
@@ -572,15 +580,17 @@ class RepoService {
         expect(flatGet(env, 'user')).toBe('User');
       });
 
-      it('does not infer from auto with function call', () => {
+      it('does not infer from auto with function call (not a known class)', () => {
         const tree = parse(`
+          class User {};
+          User getUser() { return User(); }
           void run() {
             auto x = getUser();
           }
         `, CPP);
         const env = buildTypeEnv(tree, 'cpp');
-        // getUser() is a call_expression but function is identifier, not type_identifier
-        // Behavior depends on tree-sitter parse — may or may not infer
+        // getUser is an identifier but NOT a known class — no inference
+        expect(flatGet(env, 'x')).toBeUndefined();
       });
     });
 

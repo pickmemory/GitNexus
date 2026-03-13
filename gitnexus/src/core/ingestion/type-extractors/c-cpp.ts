@@ -1,5 +1,5 @@
 import type { SyntaxNode } from '../utils.js';
-import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor } from './types.js';
+import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor } from './types.js';
 import { extractSimpleTypeName, extractVarName } from './shared.js';
 
 const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
@@ -33,7 +33,7 @@ const extractDeclaration: TypeBindingExtractor = (node: SyntaxNode, env: Map<str
 };
 
 /** C++: auto x = new User(); auto x = User(); */
-const extractInitializer: TypeBindingExtractor = (node: SyntaxNode, env: Map<string, string>): void => {
+const extractInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<string, string>, classNames: ReadonlySet<string>): void => {
   const typeNode = node.childForFieldName('type');
   if (!typeNode) return;
 
@@ -75,12 +75,19 @@ const extractInitializer: TypeBindingExtractor = (node: SyntaxNode, env: Map<str
     return;
   }
 
-  // auto x = User() — call_expression where the function position is a type/identifier
+  // auto x = User() — call_expression where function is a type name
+  // tree-sitter-cpp may parse the constructor name as type_identifier or identifier.
+  // For plain identifiers, verify against known class names from the file's AST
+  // to distinguish constructor calls (User()) from function calls (getUser()).
   if (value.type === 'call_expression') {
     const func = value.childForFieldName('function');
-    if (func && (func.type === 'type_identifier' || func.type === 'identifier')) {
+    if (!func) return;
+    if (func.type === 'type_identifier') {
       const typeName = func.text;
       if (typeName) env.set(varName, typeName);
+    } else if (func.type === 'identifier') {
+      const text = func.text;
+      if (text && classNames.has(text)) env.set(varName, text);
     }
   }
 };

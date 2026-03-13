@@ -1,5 +1,5 @@
 import type { SyntaxNode } from '../utils.js';
-import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor } from './types.js';
+import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor } from './types.js';
 import { extractSimpleTypeName, extractVarName } from './shared.js';
 
 const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
@@ -17,7 +17,7 @@ const extractDeclaration: TypeBindingExtractor = (node: SyntaxNode, env: Map<str
 };
 
 /** Rust: let x = User::new() or let x = User::default() */
-const extractInitializer: TypeBindingExtractor = (node: SyntaxNode, env: Map<string, string>): void => {
+const extractInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<string, string>, _classNames: ReadonlySet<string>): void => {
   const pattern = node.childForFieldName('pattern');
   const value = node.childForFieldName('value');
   if (!pattern || !value) return;
@@ -25,6 +25,9 @@ const extractInitializer: TypeBindingExtractor = (node: SyntaxNode, env: Map<str
   const func = value.childForFieldName('function');
   if (!func || func.type !== 'scoped_identifier') return;
   const nameField = func.childForFieldName('name');
+  // Only match ::new() and ::default() — the two idiomatic Rust constructors.
+  // Deliberately excludes ::from(), ::with_capacity(), etc. to avoid false positives
+  // (e.g. String::from("x") is not necessarily the "String" type we want for method resolution).
   if (!nameField || (nameField.text !== 'new' && nameField.text !== 'default')) return;
   const pathField = func.childForFieldName('path');
   if (!pathField) return;

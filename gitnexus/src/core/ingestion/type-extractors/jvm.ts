@@ -1,5 +1,5 @@
 import type { SyntaxNode } from '../utils.js';
-import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor } from './types.js';
+import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor } from './types.js';
 import { extractSimpleTypeName, extractVarName, findChildByType } from './shared.js';
 
 // ── Java ──────────────────────────────────────────────────────────────────
@@ -29,19 +29,21 @@ const extractJavaDeclaration: TypeBindingExtractor = (node: SyntaxNode, env: Map
 };
 
 /** Java 10+: var x = new User() — infer type from object_creation_expression */
-const extractJavaInitializer: TypeBindingExtractor = (node: SyntaxNode, env: Map<string, string>): void => {
+const extractJavaInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<string, string>, _classNames: ReadonlySet<string>): void => {
   for (let i = 0; i < node.namedChildCount; i++) {
     const child = node.namedChild(i);
     if (child?.type !== 'variable_declarator') continue;
     const nameNode = child.childForFieldName('name');
     const valueNode = child.childForFieldName('value');
     if (!nameNode || !valueNode) continue;
+    // Skip declarators that already have a binding from extractDeclaration
+    const varName = extractVarName(nameNode);
+    if (!varName || env.has(varName)) continue;
     if (valueNode.type !== 'object_creation_expression') continue;
     const ctorType = valueNode.childForFieldName('type');
     if (!ctorType) continue;
     const typeName = extractSimpleTypeName(ctorType);
-    const varName = extractVarName(nameNode);
-    if (varName && typeName) env.set(varName, typeName);
+    if (typeName) env.set(varName, typeName);
   }
 };
 
