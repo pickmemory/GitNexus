@@ -32,6 +32,59 @@ const extractDeclaration: TypeBindingExtractor = (node: SyntaxNode, env: Map<str
   if (varName) env.set(varName, typeName);
 };
 
+/** C++: auto x = new User(); auto x = User(); */
+const extractInitializer: TypeBindingExtractor = (node: SyntaxNode, env: Map<string, string>): void => {
+  const typeNode = node.childForFieldName('type');
+  if (!typeNode) return;
+
+  // Only handle auto/placeholder — typed declarations are handled by extractDeclaration
+  const typeText = typeNode.text;
+  if (
+    typeText !== 'auto' &&
+    typeText !== 'decltype(auto)' &&
+    typeNode.type !== 'placeholder_type_specifier'
+  ) return;
+
+  const declarator = node.childForFieldName('declarator');
+  if (!declarator) return;
+
+  // Must be an init_declarator (i.e., has an initializer value)
+  if (declarator.type !== 'init_declarator') return;
+
+  const value = declarator.childForFieldName('value');
+  if (!value) return;
+
+  // Resolve the variable name, unwrapping pointer/reference declarators
+  const nameNode = declarator.childForFieldName('declarator');
+  if (!nameNode) return;
+  const finalName =
+    nameNode.type === 'pointer_declarator' || nameNode.type === 'reference_declarator'
+      ? nameNode.firstNamedChild
+      : nameNode;
+  if (!finalName) return;
+  const varName = extractVarName(finalName);
+  if (!varName) return;
+
+  // auto x = new User() — new_expression
+  if (value.type === 'new_expression') {
+    const ctorType = value.childForFieldName('type');
+    if (ctorType) {
+      const typeName = extractSimpleTypeName(ctorType);
+      if (typeName) env.set(varName, typeName);
+    }
+    return;
+  }
+
+  // auto x = User() — call_expression where the function position is a type/identifier
+  if (value.type === 'call_expression') {
+    const func = value.childForFieldName('function');
+    if (func && (func.type === 'type_identifier' || func.type === 'identifier')) {
+      const typeName = func.text;
+      if (typeName) env.set(varName, typeName);
+    }
+  }
+};
+
 /** C/C++: parameter_declaration → type declarator */
 const extractParameter: ParameterExtractor = (node: SyntaxNode, env: Map<string, string>): void => {
   let nameNode: SyntaxNode | null = null;
@@ -60,4 +113,5 @@ export const typeConfig: LanguageTypeConfig = {
   declarationNodeTypes: DECLARATION_NODE_TYPES,
   extractDeclaration,
   extractParameter,
+  extractInitializer,
 };

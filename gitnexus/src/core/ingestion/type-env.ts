@@ -102,6 +102,10 @@ const walkForTypes = (
 /**
  * Try to extract a (variableName → typeName) binding from a single AST node.
  * Delegates to per-language type configurations.
+ *
+ * Resolution tiers (first match wins):
+ * - Tier 0: explicit type annotations via extractDeclaration
+ * - Tier 1: constructor-call inference via extractInitializer (fallback)
  */
 const extractTypeBinding = (
   node: SyntaxNode,
@@ -119,6 +123,11 @@ const extractTypeBinding = (
   // === Per-language declaration extraction ===
   const config = typeConfigs[language];
   if (config.declarationNodeTypes.has(node.type)) {
+    const sizeBefore = env.size;
     config.extractDeclaration(node, env);
+    // Tier 1: if no annotation was found, try constructor-call inference
+    if (env.size === sizeBefore && config.extractInitializer) {
+      config.extractInitializer(node, env);
+    }
   }
 };

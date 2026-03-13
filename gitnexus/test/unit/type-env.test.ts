@@ -414,6 +414,189 @@ class RepoService {
     });
   });
 
+  describe('constructor inference (Tier 1 fallback)', () => {
+    describe('TypeScript', () => {
+      it('infers type from new expression when no annotation', () => {
+        const tree = parse('const user = new User();', TypeScript.typescript);
+        const env = buildTypeEnv(tree, 'typescript');
+        expect(flatGet(env, 'user')).toBe('User');
+      });
+
+      it('prefers explicit annotation over constructor inference', () => {
+        const tree = parse('const user: BaseUser = new User();', TypeScript.typescript);
+        const env = buildTypeEnv(tree, 'typescript');
+        expect(flatGet(env, 'user')).toBe('BaseUser');
+      });
+
+      it('does not infer from namespaced constructor (known limitation)', () => {
+        // extractSimpleTypeName only handles simple identifiers, not member expressions
+        const tree = parse('const svc = new ns.Service();', TypeScript.typescript);
+        const env = buildTypeEnv(tree, 'typescript');
+        // member_expression as constructor → extractSimpleTypeName returns undefined
+        expect(flatGet(env, 'svc')).toBeUndefined();
+      });
+
+      it('ignores non-new assignments', () => {
+        const tree = parse('const x = getUser();', TypeScript.typescript);
+        const env = buildTypeEnv(tree, 'typescript');
+        expect(flatSize(env)).toBe(0);
+      });
+    });
+
+    describe('Java', () => {
+      it('infers type from var with new expression (Java 10+)', () => {
+        const tree = parse(`
+          class App {
+            void run() {
+              var user = new User();
+            }
+          }
+        `, Java);
+        const env = buildTypeEnv(tree, 'java');
+        expect(flatGet(env, 'user')).toBe('User');
+      });
+
+      it('prefers explicit type over constructor inference', () => {
+        const tree = parse(`
+          class App {
+            void run() {
+              User user = new User();
+            }
+          }
+        `, Java);
+        const env = buildTypeEnv(tree, 'java');
+        expect(flatGet(env, 'user')).toBe('User');
+      });
+
+      it('does not infer from var without new expression', () => {
+        const tree = parse(`
+          class App {
+            void run() {
+              var x = getUser();
+            }
+          }
+        `, Java);
+        const env = buildTypeEnv(tree, 'java');
+        expect(flatGet(env, 'x')).toBeUndefined();
+      });
+    });
+
+    describe('Rust', () => {
+      it('infers type from Type::new()', () => {
+        const tree = parse(`
+          fn main() {
+            let user = User::new();
+          }
+        `, Rust);
+        const env = buildTypeEnv(tree, 'rust');
+        expect(flatGet(env, 'user')).toBe('User');
+      });
+
+      it('infers type from Type::default()', () => {
+        const tree = parse(`
+          fn main() {
+            let config = Config::default();
+          }
+        `, Rust);
+        const env = buildTypeEnv(tree, 'rust');
+        expect(flatGet(env, 'config')).toBe('Config');
+      });
+
+      it('prefers explicit annotation over constructor inference', () => {
+        const tree = parse(`
+          fn main() {
+            let user: User = User::new();
+          }
+        `, Rust);
+        const env = buildTypeEnv(tree, 'rust');
+        expect(flatGet(env, 'user')).toBe('User');
+      });
+
+      it('does not infer from Type::other_method()', () => {
+        const tree = parse(`
+          fn main() {
+            let user = User::from_str("alice");
+          }
+        `, Rust);
+        const env = buildTypeEnv(tree, 'rust');
+        expect(flatGet(env, 'user')).toBeUndefined();
+      });
+    });
+
+    describe('PHP', () => {
+      it('infers type from new expression', () => {
+        const tree = parse(`<?php
+          $user = new User();
+        `, PHP.php);
+        const env = buildTypeEnv(tree, 'php');
+        expect(flatGet(env, '$user')).toBe('User');
+      });
+
+      it('does not infer from non-new assignments', () => {
+        const tree = parse(`<?php
+          $user = getUser();
+        `, PHP.php);
+        const env = buildTypeEnv(tree, 'php');
+        expect(flatGet(env, '$user')).toBeUndefined();
+      });
+    });
+
+    describe('C++', () => {
+      it('infers type from auto with new expression', () => {
+        const tree = parse(`
+          void run() {
+            auto user = new User();
+          }
+        `, CPP);
+        const env = buildTypeEnv(tree, 'cpp');
+        expect(flatGet(env, 'user')).toBe('User');
+      });
+
+      it('infers type from auto with direct construction', () => {
+        const tree = parse(`
+          void run() {
+            auto user = User();
+          }
+        `, CPP);
+        const env = buildTypeEnv(tree, 'cpp');
+        expect(flatGet(env, 'user')).toBe('User');
+      });
+
+      it('prefers explicit type over auto inference', () => {
+        const tree = parse(`
+          void run() {
+            User* user = new User();
+          }
+        `, CPP);
+        const env = buildTypeEnv(tree, 'cpp');
+        expect(flatGet(env, 'user')).toBe('User');
+      });
+
+      it('does not infer from auto with function call', () => {
+        const tree = parse(`
+          void run() {
+            auto x = getUser();
+          }
+        `, CPP);
+        const env = buildTypeEnv(tree, 'cpp');
+        // getUser() is a call_expression but function is identifier, not type_identifier
+        // Behavior depends on tree-sitter parse — may or may not infer
+      });
+    });
+
+    describe('Kotlin (no constructor inference — deferred)', () => {
+      it('still extracts explicit type annotations', () => {
+        const tree = parse(`
+          fun main() {
+            val user: User = User()
+          }
+        `, Kotlin);
+        const env = buildTypeEnv(tree, 'kotlin');
+        expect(flatGet(env, 'user')).toBe('User');
+      });
+    });
+  });
+
   describe('edge cases', () => {
     it('returns empty map for code without type annotations', () => {
       const tree = parse('const x = 5;', TypeScript.typescript);

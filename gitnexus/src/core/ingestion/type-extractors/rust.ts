@@ -16,6 +16,23 @@ const extractDeclaration: TypeBindingExtractor = (node: SyntaxNode, env: Map<str
   if (varName && typeName) env.set(varName, typeName);
 };
 
+/** Rust: let x = User::new() or let x = User::default() */
+const extractInitializer: TypeBindingExtractor = (node: SyntaxNode, env: Map<string, string>): void => {
+  const pattern = node.childForFieldName('pattern');
+  const value = node.childForFieldName('value');
+  if (!pattern || !value) return;
+  if (value.type !== 'call_expression') return;
+  const func = value.childForFieldName('function');
+  if (!func || func.type !== 'scoped_identifier') return;
+  const nameField = func.childForFieldName('name');
+  if (!nameField || (nameField.text !== 'new' && nameField.text !== 'default')) return;
+  const pathField = func.childForFieldName('path');
+  if (!pathField) return;
+  const typeName = extractSimpleTypeName(pathField);
+  const varName = extractVarName(pattern);
+  if (varName && typeName) env.set(varName, typeName);
+};
+
 /** Rust: parameter → pattern: type */
 const extractParameter: ParameterExtractor = (node: SyntaxNode, env: Map<string, string>): void => {
   let nameNode: SyntaxNode | null = null;
@@ -38,5 +55,6 @@ const extractParameter: ParameterExtractor = (node: SyntaxNode, env: Map<string,
 export const typeConfig: LanguageTypeConfig = {
   declarationNodeTypes: DECLARATION_NODE_TYPES,
   extractDeclaration,
+  extractInitializer,
   extractParameter,
 };

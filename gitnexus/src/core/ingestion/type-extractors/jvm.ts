@@ -14,7 +14,7 @@ const extractJavaDeclaration: TypeBindingExtractor = (node: SyntaxNode, env: Map
   const typeNode = node.childForFieldName('type');
   if (!typeNode) return;
   const typeName = extractSimpleTypeName(typeNode);
-  if (!typeName) return;
+  if (!typeName || typeName === 'var') return; // skip Java 10 var — handled by extractInitializer
 
   // Find variable_declarator children
   for (let i = 0; i < node.namedChildCount; i++) {
@@ -25,6 +25,23 @@ const extractJavaDeclaration: TypeBindingExtractor = (node: SyntaxNode, env: Map
       const varName = extractVarName(nameNode);
       if (varName) env.set(varName, typeName);
     }
+  }
+};
+
+/** Java 10+: var x = new User() — infer type from object_creation_expression */
+const extractJavaInitializer: TypeBindingExtractor = (node: SyntaxNode, env: Map<string, string>): void => {
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const child = node.namedChild(i);
+    if (child?.type !== 'variable_declarator') continue;
+    const nameNode = child.childForFieldName('name');
+    const valueNode = child.childForFieldName('value');
+    if (!nameNode || !valueNode) continue;
+    if (valueNode.type !== 'object_creation_expression') continue;
+    const ctorType = valueNode.childForFieldName('type');
+    if (!ctorType) continue;
+    const typeName = extractSimpleTypeName(ctorType);
+    const varName = extractVarName(nameNode);
+    if (varName && typeName) env.set(varName, typeName);
   }
 };
 
@@ -52,6 +69,7 @@ export const javaTypeConfig: LanguageTypeConfig = {
   declarationNodeTypes: JAVA_DECLARATION_NODE_TYPES,
   extractDeclaration: extractJavaDeclaration,
   extractParameter: extractJavaParameter,
+  extractInitializer: extractJavaInitializer,
 };
 
 // ── Kotlin ────────────────────────────────────────────────────────────────

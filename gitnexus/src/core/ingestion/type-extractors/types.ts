@@ -14,4 +14,8 @@ export interface LanguageTypeConfig {
   extractDeclaration: TypeBindingExtractor;
   /** Extract a (varName → typeName) binding from a parameter node */
   extractParameter: ParameterExtractor;
+  /** Extract a (varName → typeName) binding from a constructor-call initializer.
+   *  Called as fallback when extractDeclaration produces no binding for a declaration node.
+   *  Only for languages with syntactic constructor markers (new, composite_literal, ::new). */
+  extractInitializer?: TypeBindingExtractor;
 }

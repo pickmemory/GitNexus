@@ -41,8 +41,29 @@ const extractParameter: ParameterExtractor = (node: SyntaxNode, env: Map<string,
   if (varName && typeName) env.set(varName, typeName);
 };
 
+/** TypeScript: const x = new User(), let x = new ns.Service() */
+const extractInitializer: TypeBindingExtractor = (node: SyntaxNode, env: Map<string, string>): void => {
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const declarator = node.namedChild(i);
+    if (declarator?.type !== 'variable_declarator') continue;
+    // Only activate when there is no explicit type annotation — extractDeclaration already
+    // handles the annotated case and this function is called as a fallback.
+    if (declarator.childForFieldName('type') !== null) continue;
+    const valueNode = declarator.childForFieldName('value');
+    if (valueNode?.type !== 'new_expression') continue;
+    const constructorNode = valueNode.childForFieldName('constructor');
+    if (!constructorNode) continue;
+    const nameNode = declarator.childForFieldName('name');
+    if (!nameNode) continue;
+    const varName = extractVarName(nameNode);
+    const typeName = extractSimpleTypeName(constructorNode);
+    if (varName && typeName) env.set(varName, typeName);
+  }
+};
+
 export const typeConfig: LanguageTypeConfig = {
   declarationNodeTypes: DECLARATION_NODE_TYPES,
   extractDeclaration,
   extractParameter,
+  extractInitializer,
 };
