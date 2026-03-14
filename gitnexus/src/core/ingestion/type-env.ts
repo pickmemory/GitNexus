@@ -171,6 +171,7 @@ export const buildTypeEnv = (
   const walk = (node: SyntaxNode, currentScope: string): void => {
     // Collect class/struct names as we encounter them (used by extractInitializer
     // to distinguish constructor calls from function calls, e.g. C++ `User()` vs `getUser()`)
+    // Currently only C++ uses this locally; other languages rely on the SymbolTable path.
     if (CLASS_CONTAINER_TYPES.has(node.type)) {
       // Most languages use 'name' field; Kotlin uses a type_identifier child instead
       const nameNode = node.childForFieldName('name')
