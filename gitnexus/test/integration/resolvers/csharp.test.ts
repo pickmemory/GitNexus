@@ -58,7 +58,7 @@ describe('C# heritage resolution', () => {
     // Calls resolve via directory-based PackageMap (import-resolved) when ambiguous,
     // or via unique-global when the symbol name is globally unique.
     for (const call of calls) {
-      expect(['import-resolved', 'unique-global']).toContain(call.rel.reason);
+      expect(['import-resolved', 'global']).toContain(call.rel.reason);
     }
   });
 
