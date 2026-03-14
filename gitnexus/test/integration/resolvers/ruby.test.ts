@@ -315,3 +315,68 @@ describe('Ruby local definition shadows import', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Constructor-inferred type resolution: user = User.new; user.save → User.save
+// ---------------------------------------------------------------------------
+
+describe('Ruby constructor-inferred type resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'ruby-constructor-type-inference'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User, Repo, and AppService classes', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
+    expect(getNodesByLabel(result, 'Class')).toContain('AppService');
+  });
+
+  it('detects save on User and Repo, cleanup on all three', () => {
+    const methods = getNodesByLabel(result, 'Method');
+    expect(methods.filter(m => m === 'save').length).toBe(2);
+    expect(methods.filter(m => m === 'cleanup').length).toBe(3);
+  });
+
+  it('resolves user.save to models/user.rb via constructor-inferred type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'models/user.rb');
+    expect(userSave).toBeDefined();
+    expect(userSave!.source).toBe('process_entities');
+  });
+
+  it('resolves repo.save to models/repo.rb via constructor-inferred type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'models/repo.rb');
+    expect(repoSave).toBeDefined();
+    expect(repoSave!.source).toBe('process_entities');
+  });
+
+  it('emits exactly 2 save CALLS edges (one per receiver type)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(c => c.target === 'save');
+    expect(saveCalls.length).toBe(2);
+  });
+
+  it('resolves self.process_entities to services/app.rb (unique method)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const selfCall = calls.find(c =>
+      c.source === 'greet' && c.target === 'process_entities'
+    );
+    expect(selfCall).toBeDefined();
+    expect(selfCall!.targetFilePath).toContain('app.rb');
+  });
+
+  it('resolves self.cleanup to services/app.rb, not models/user.rb or models/repo.rb', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const selfCleanup = calls.find(c =>
+      c.source === 'greet' && c.target === 'cleanup'
+    );
+    expect(selfCleanup).toBeDefined();
+    expect(selfCleanup!.targetFilePath).toContain('app.rb');
+  });
+});
+

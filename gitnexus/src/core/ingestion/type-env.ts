@@ -32,12 +32,20 @@ const findTypeIdentifierChild = (node: SyntaxNode): SyntaxNode | null => {
 /**
  * Look up a variable's type in the TypeEnv, trying the call's enclosing
  * function scope first, then falling back to file-level scope.
+ *
+ * Special handling for `self`/`this`: resolves to the enclosing class name
+ * by walking up the AST, enabling receiver-type filtering for self.method() calls.
  */
 export const lookupTypeEnv = (
   env: TypeEnv,
   varName: string,
   callNode: SyntaxNode,
 ): string | undefined => {
+  // Self/this receiver: resolve to enclosing class name via AST walk
+  if (varName === 'self' || varName === 'this') {
+    return findEnclosingClassName(callNode);
+  }
+
   // Determine the enclosing function scope for the call
   const scopeKey = findEnclosingScopeKey(callNode);
 
@@ -53,6 +61,22 @@ export const lookupTypeEnv = (
   // Fall back to file-level scope
   const fileEnv = env.get(FILE_SCOPE);
   return fileEnv?.get(varName);
+};
+
+/**
+ * Walk up the AST from a node to find the enclosing class/module name.
+ * Used to resolve `self`/`this` receivers to their containing type.
+ */
+const findEnclosingClassName = (node: SyntaxNode): string | undefined => {
+  let current = node.parent;
+  while (current) {
+    if (CLASS_CONTAINER_TYPES.has(current.type)) {
+      const nameNode = current.childForFieldName('name');
+      if (nameNode) return nameNode.text;
+    }
+    current = current.parent;
+  }
+  return undefined;
 };
 
 /** Find the enclosing function name for scope lookup. */
@@ -216,6 +240,21 @@ const extractCppConstructorBinding = (node: SyntaxNode): { varName: string; call
   return { varName, calleeName: func.text };
 };
 
+/** Ruby: user = User.new — assignment with call where method is 'new' and receiver is a constant */
+const extractRubyConstructorBinding = (node: SyntaxNode): { varName: string; calleeName: string } | undefined => {
+  if (node.type !== 'assignment') return undefined;
+  const left = node.childForFieldName('left');
+  const right = node.childForFieldName('right');
+  if (!left || !right) return undefined;
+  if (left.type !== 'identifier') return undefined;
+  if (right.type !== 'call') return undefined;
+  const method = right.childForFieldName('method');
+  if (!method || method.text !== 'new') return undefined;
+  const receiver = right.childForFieldName('receiver');
+  if (!receiver || receiver.type !== 'constant') return undefined;
+  return { varName: left.text, calleeName: receiver.text };
+};
+
 /** Language-specific constructor-binding scanners. */
 const CONSTRUCTOR_BINDING_SCANNERS: Partial<Record<SupportedLanguages, (node: SyntaxNode) => { varName: string; calleeName: string } | undefined>> = {
   // Kotlin: val x = User(...) — property_declaration with call_expression
@@ -275,6 +314,9 @@ const CONSTRUCTOR_BINDING_SCANNERS: Partial<Record<SupportedLanguages, (node: Sy
   // C/C++: auto x = User() where User is parsed as identifier (cross-file)
   [SupportedLanguages.C]: extractCppConstructorBinding,
   [SupportedLanguages.CPlusPlus]: extractCppConstructorBinding,
+
+  // Ruby: user = User.new — assignment with call where method is 'new' and receiver is a constant
+  [SupportedLanguages.Ruby]: extractRubyConstructorBinding,
 };
 
 /**
