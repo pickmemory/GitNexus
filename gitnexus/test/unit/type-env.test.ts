@@ -676,7 +676,7 @@ class RepoService {
       });
     });
 
-    describe('Kotlin (no constructor inference — deferred)', () => {
+    describe('Kotlin constructor inference', () => {
       it('still extracts explicit type annotations', () => {
         const tree = parse(`
           fun main() {
@@ -685,6 +685,80 @@ class RepoService {
         `, Kotlin);
         const env = buildTypeEnv(tree, 'kotlin');
         expect(flatGet(env, 'user')).toBe('User');
+      });
+
+      it('infers type from constructor call when class is in same file', () => {
+        const tree = parse(`
+          class User(val name: String)
+          fun main() {
+            val user = User("Alice")
+          }
+        `, Kotlin);
+        const env = buildTypeEnv(tree, 'kotlin');
+        expect(flatGet(env, 'user')).toBe('User');
+      });
+
+      it('does NOT infer type from plain function call', () => {
+        const tree = parse(`
+          fun getUser(): User = User("Alice")
+          fun main() {
+            val user = getUser()
+          }
+        `, Kotlin);
+        const env = buildTypeEnv(tree, 'kotlin');
+        // getUser is not a class name — should NOT produce a binding
+        expect(flatGet(env, 'user')).toBeUndefined();
+      });
+
+      it('infers type from constructor when class defined via SymbolTable', () => {
+        const tree = parse(`
+          fun main() {
+            val user = User("Alice")
+          }
+        `, Kotlin);
+        // User is NOT defined in this file, but SymbolTable knows it's a Class
+        const mockSymbolTable = {
+          lookupFuzzy: (name: string) =>
+            name === 'User' ? [{ nodeId: 'n1', filePath: 'models.kt', type: 'Class' }] : [],
+          lookupExact: () => undefined,
+          lookupExactFull: () => undefined,
+          add: () => {},
+          getStats: () => ({ fileCount: 0, globalSymbolCount: 0 }),
+          clear: () => {},
+        };
+        const env = buildTypeEnv(tree, 'kotlin', mockSymbolTable as any);
+        expect(flatGet(env, 'user')).toBe('User');
+      });
+
+      it('does NOT infer when SymbolTable says callee is a Function', () => {
+        const tree = parse(`
+          fun main() {
+            val result = doStuff()
+          }
+        `, Kotlin);
+        const mockSymbolTable = {
+          lookupFuzzy: (name: string) =>
+            name === 'doStuff' ? [{ nodeId: 'n1', filePath: 'utils.kt', type: 'Function' }] : [],
+          lookupExact: () => undefined,
+          lookupExactFull: () => undefined,
+          add: () => {},
+          getStats: () => ({ fileCount: 0, globalSymbolCount: 0 }),
+          clear: () => {},
+        };
+        const env = buildTypeEnv(tree, 'kotlin', mockSymbolTable as any);
+        expect(flatGet(env, 'result')).toBeUndefined();
+      });
+
+      it('prefers explicit annotation over constructor inference', () => {
+        const tree = parse(`
+          class User(val name: String)
+          fun main() {
+            val user: BaseEntity = User("Alice")
+          }
+        `, Kotlin);
+        const env = buildTypeEnv(tree, 'kotlin');
+        // Tier 0 (explicit annotation) wins over Tier 1 (constructor inference)
+        expect(flatGet(env, 'user')).toBe('BaseEntity');
       });
     });
   });

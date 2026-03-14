@@ -229,12 +229,13 @@ export const runPipelineFromRepo = async (
           // and the single-threaded event loop prevents races between synchronous addRelationship calls.
           await Promise.all([
             processCallsFromExtracted(
-              graph, 
-              chunkWorkerData.calls, 
-              symbolTable, importMap, 
-              packageMap, 
-              undefined, 
-              namedImportMap
+              graph,
+              chunkWorkerData.calls,
+              symbolTable, importMap,
+              packageMap,
+              undefined,
+              namedImportMap,
+              chunkWorkerData.constructorBindings
             ),
             processHeritageFromExtracted(
               graph, 

@@ -21,7 +21,7 @@ import {
 } from './utils.js';
 import { buildTypeEnv, lookupTypeEnv } from './type-env.js';
 import { getTreeSitterBufferSize } from './constants.js';
-import type { ExtractedCall, ExtractedRoute } from './workers/parse-worker.js';
+import type { ExtractedCall, ExtractedRoute, FileConstructorBindings } from './workers/parse-worker.js';
 
 /**
  * Walk up the AST from a node to find the enclosing function/method.
@@ -117,7 +117,7 @@ export const processCalls = async (
 
     // Build per-file TypeEnv for receiver resolution
     const lang = getLanguageFromFilename(file.path);
-    const typeEnv = lang ? buildTypeEnv(tree, lang) : new Map();
+    const typeEnv = lang ? buildTypeEnv(tree, lang, symbolTable) : new Map();
 
     // 3. Process each call match
     matches.forEach(match => {
@@ -329,8 +329,35 @@ const resolveCallTarget = (
   const filteredCandidates = filterCallableCandidates(tiered.candidates, call.argCount, call.callForm);
 
   // D. Receiver-type filtering: for member calls with a known receiver type,
-  // filter candidates by ownerId matching the resolved type's nodeId
+  // resolve the type through the same tiered import infrastructure, then
+  // filter method candidates to the type's defining file. Fall back to
+  // fuzzy ownerId matching only when file-based narrowing is inconclusive.
   if (call.callForm === 'member' && call.receiverTypeName && filteredCandidates.length > 1) {
+    // D1. Resolve the receiver type using the same tiered resolution as calls:
+    //     same-file → import-scoped (importMap/packageMap/namedImportMap) → global
+    const typeResolved = collectTieredCandidates(
+      call.receiverTypeName, currentFile, symbolTable, importMap, packageMap, namedImportMap,
+    );
+    if (typeResolved && typeResolved.candidates.length > 0) {
+      // D2. File-based: prefer candidates whose filePath matches the resolved type's file
+      const typeFiles = new Set(typeResolved.candidates.map(d => d.filePath));
+      const fileFiltered = filteredCandidates.filter(c => typeFiles.has(c.filePath));
+      if (fileFiltered.length === 1) {
+        return toResolveResult(fileFiltered[0], tiered.tier);
+      }
+      // D3. ownerId fallback: if multiple methods coexist in the same file as the type,
+      //     narrow by ownerId matching the type's nodeId
+      if (fileFiltered.length > 1) {
+        const typeNodeIds = new Set(typeResolved.candidates.map(d => d.nodeId));
+        const ownerFiltered = fileFiltered.filter(c => c.ownerId && typeNodeIds.has(c.ownerId));
+        if (ownerFiltered.length === 1) {
+          return toResolveResult(ownerFiltered[0], tiered.tier);
+        }
+        return null; // still ambiguous
+      }
+      // fileFiltered.length === 0: type's file has no matching methods, fall through
+    }
+    // D4. Last resort: fuzzy ownerId matching without import resolution
     const typeDefs = symbolTable.lookupFuzzy(call.receiverTypeName);
     if (typeDefs.length > 0) {
       const typeNodeIds = new Set(typeDefs.map(d => d.nodeId));
@@ -338,8 +365,6 @@ const resolveCallTarget = (
       if (ownerFiltered.length === 1) {
         return toResolveResult(ownerFiltered[0], tiered.tier);
       }
-      // If receiver filtering narrows to 0, fall through to name-only resolution
-      // If still 2+, refuse (don't guess)
       if (ownerFiltered.length > 1) return null;
     }
   }
@@ -362,7 +387,26 @@ export const processCallsFromExtracted = async (
   packageMap?: PackageMap,
   onProgress?: (current: number, total: number) => void,
   namedImportMap?: NamedImportMap,
+  constructorBindings?: FileConstructorBindings[],
 ) => {
+  // Build per-file receiver type maps from verified constructor bindings.
+  // The parse-worker captured unverified (scope, varName, calleeName) tuples;
+  // we verify each calleeName is a Class reachable via the file's imports.
+  const fileReceiverTypes = new Map<string, Map<string, string>>();
+  if (constructorBindings) {
+    for (const { filePath, bindings } of constructorBindings) {
+      for (const { varName, calleeName } of bindings) {
+        // Use tiered resolution to verify the class is reachable from this file
+        const tiered = collectTieredCandidates(calleeName, filePath, symbolTable, importMap, packageMap, namedImportMap);
+        const isClass = tiered?.candidates.some(def => def.type === 'Class') ?? false;
+        if (isClass) {
+          if (!fileReceiverTypes.has(filePath)) fileReceiverTypes.set(filePath, new Map());
+          fileReceiverTypes.get(filePath)!.set(varName, calleeName);
+        }
+      }
+    }
+  }
+
   // Group by file for progress reporting
   const byFile = new Map<string, ExtractedCall[]>();
   for (const call of extractedCalls) {
@@ -377,17 +421,28 @@ export const processCallsFromExtracted = async (
   const totalFiles = byFile.size;
   let filesProcessed = 0;
 
-  for (const [_filePath, calls] of byFile) {
+  for (const [filePath, calls] of byFile) {
     filesProcessed++;
     if (filesProcessed % 100 === 0) {
       onProgress?.(filesProcessed, totalFiles);
       await yieldToEventLoop();
     }
 
+    const receiverMap = fileReceiverTypes.get(filePath);
+
     for (const call of calls) {
+      // Fix up receiver type for member calls using verified constructor bindings
+      let effectiveCall = call;
+      if (!call.receiverTypeName && call.receiverName && receiverMap) {
+        const resolvedType = receiverMap.get(call.receiverName);
+        if (resolvedType) {
+          effectiveCall = { ...call, receiverTypeName: resolvedType };
+        }
+      }
+
       const resolved = resolveCallTarget(
-        call,
-        call.filePath,
+        effectiveCall,
+        effectiveCall.filePath,
         symbolTable,
         importMap,
         packageMap,
@@ -395,10 +450,10 @@ export const processCallsFromExtracted = async (
       );
       if (!resolved) continue;
 
-      const relId = generateId('CALLS', `${call.sourceId}:${call.calledName}->${resolved.nodeId}`);
+      const relId = generateId('CALLS', `${effectiveCall.sourceId}:${effectiveCall.calledName}->${resolved.nodeId}`);
       graph.addRelationship({
         id: relId,
-        sourceId: call.sourceId,
+        sourceId: effectiveCall.sourceId,
         targetId: resolved.nodeId,
         type: 'CALLS',
         confidence: resolved.confidence,

@@ -32,7 +32,8 @@ import {
   inferCallForm,
   extractReceiverName
 } from '../utils.js';
-import { buildTypeEnv, lookupTypeEnv } from '../type-env.js';
+import { buildTypeEnv, lookupTypeEnv, scanConstructorBindings } from '../type-env.js';
+import type { ConstructorBinding } from '../type-env.js';
 import { isNodeExported } from '../export-detection.js';
 import { detectFrameworkFromAST } from '../framework-detection.js';
 import { generateId } from '../../../lib/utils.js';
@@ -120,6 +121,12 @@ export interface ExtractedRoute {
   lineNumber: number;
 }
 
+/** Constructor bindings keyed by filePath for cross-file type resolution */
+export interface FileConstructorBindings {
+  filePath: string;
+  bindings: ConstructorBinding[];
+}
+
 export interface ParseWorkerResult {
   nodes: ParsedNode[];
   relationships: ParsedRelationship[];
@@ -128,6 +135,7 @@ export interface ParseWorkerResult {
   calls: ExtractedCall[];
   heritage: ExtractedHeritage[];
   routes: ExtractedRoute[];
+  constructorBindings: FileConstructorBindings[];
   fileCount: number;
 }
 
@@ -238,6 +246,7 @@ const processBatch = (files: ParseWorkerInput[], onProgress?: (filesProcessed: n
     calls: [],
     heritage: [],
     routes: [],
+    constructorBindings: [],
     fileCount: 0,
   };
 
@@ -824,6 +833,13 @@ const processFileGroup = (
     // Build per-file TypeEnv from explicit type annotations (for receiver resolution)
     const typeEnv = buildTypeEnv(tree, language);
 
+    // Scan for constructor bindings that couldn't be resolved locally (cross-file classes).
+    // These are verified against the SymbolTable in processCallsFromExtracted.
+    const ctorBindings = scanConstructorBindings(tree, language, typeEnv);
+    if (ctorBindings.length > 0) {
+      result.constructorBindings.push({ filePath: file.path, bindings: ctorBindings });
+    }
+
     let matches;
     try {
       matches = query.matches(tree.rootNode);
@@ -1024,7 +1040,7 @@ const processFileGroup = (
 /** Accumulated result across sub-batches */
 let accumulated: ParseWorkerResult = {
   nodes: [], relationships: [], symbols: [],
-  imports: [], calls: [], heritage: [], routes: [], fileCount: 0,
+  imports: [], calls: [], heritage: [], routes: [], constructorBindings: [], fileCount: 0,
 };
 let cumulativeProcessed = 0;
 
@@ -1036,6 +1052,7 @@ const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult) => {
   target.calls.push(...src.calls);
   target.heritage.push(...src.heritage);
   target.routes.push(...src.routes);
+  target.constructorBindings.push(...src.constructorBindings);
   target.fileCount += src.fileCount;
 };
 
@@ -1057,7 +1074,7 @@ parentPort!.on('message', (msg: any) => {
     if (msg && msg.type === 'flush') {
       parentPort!.postMessage({ type: 'result', data: accumulated });
       // Reset for potential reuse
-      accumulated = { nodes: [], relationships: [], symbols: [], imports: [], calls: [], heritage: [], routes: [], fileCount: 0 };
+      accumulated = { nodes: [], relationships: [], symbols: [], imports: [], calls: [], heritage: [], routes: [], constructorBindings: [], fileCount: 0 };
       cumulativeProcessed = 0;
       return;
     }

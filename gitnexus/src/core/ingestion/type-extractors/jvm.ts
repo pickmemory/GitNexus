@@ -135,8 +135,40 @@ const extractKotlinParameter: ParameterExtractor = (node: SyntaxNode, env: Map<s
   if (varName && typeName) env.set(varName, typeName);
 };
 
+/** Kotlin: val user = User() — infer type from call_expression when callee is a known class.
+ *  Kotlin constructors are syntactically identical to function calls, so we verify
+ *  against classNames (which may include cross-file SymbolTable lookups). */
+const extractKotlinInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<string, string>, classNames: ReadonlySet<string>): void => {
+  if (node.type !== 'property_declaration') return;
+  // Skip if there's an explicit type annotation — Tier 0 already handled it
+  const varDecl = findChildByType(node, 'variable_declaration');
+  if (varDecl && findChildByType(varDecl, 'user_type')) return;
+
+  // Get the initializer value — the call_expression after '='
+  const value = node.childForFieldName('value')
+    ?? findChildByType(node, 'call_expression');
+  if (!value || value.type !== 'call_expression') return;
+
+  // The callee is the first child of call_expression (simple_identifier for direct calls)
+  const callee = value.firstNamedChild;
+  if (!callee || callee.type !== 'simple_identifier') return;
+
+  const calleeName = callee.text;
+  if (!calleeName || !classNames.has(calleeName)) return;
+
+  // Extract the variable name from the variable_declaration inside property_declaration
+  const nameNode = varDecl
+    ? findChildByType(varDecl, 'simple_identifier')
+    : findChildByType(node, 'simple_identifier');
+  if (!nameNode) return;
+
+  const varName = extractVarName(nameNode);
+  if (varName) env.set(varName, calleeName);
+};
+
 export const kotlinTypeConfig: LanguageTypeConfig = {
   declarationNodeTypes: KOTLIN_DECLARATION_NODE_TYPES,
   extractDeclaration: extractKotlinDeclaration,
   extractParameter: extractKotlinParameter,
+  extractInitializer: extractKotlinInitializer,
 };

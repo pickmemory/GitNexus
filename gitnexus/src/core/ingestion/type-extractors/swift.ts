@@ -1,5 +1,5 @@
 import type { SyntaxNode } from '../utils.js';
-import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor } from './types.js';
+import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor } from './types.js';
 import { extractSimpleTypeName, extractVarName, findChildByType } from './shared.js';
 
 const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
@@ -39,8 +39,32 @@ const extractParameter: ParameterExtractor = (node: SyntaxNode, env: Map<string,
   if (varName && typeName) env.set(varName, typeName);
 };
 
+/** Swift: let user = User(name: "alice") — infer type from call when callee is a known class.
+ *  Swift initializers are syntactically identical to function calls, so we verify
+ *  against classNames (which may include cross-file SymbolTable lookups). */
+const extractInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<string, string>, classNames: ReadonlySet<string>): void => {
+  if (node.type !== 'property_declaration') return;
+  // Skip if has type annotation — extractDeclaration handled it
+  if (node.childForFieldName('type') || findChildByType(node, 'type_annotation')) return;
+  // Find pattern (variable name)
+  const pattern = node.childForFieldName('pattern') ?? findChildByType(node, 'pattern');
+  if (!pattern) return;
+  const varName = extractVarName(pattern) ?? pattern.text;
+  if (!varName || env.has(varName)) return;
+  // Find call_expression in the value
+  const callExpr = findChildByType(node, 'call_expression');
+  if (!callExpr) return;
+  const callee = callExpr.firstNamedChild;
+  if (!callee || callee.type !== 'simple_identifier') return;
+  const calleeName = callee.text;
+  if (calleeName && classNames.has(calleeName)) {
+    env.set(varName, calleeName);
+  }
+};
+
 export const typeConfig: LanguageTypeConfig = {
   declarationNodeTypes: DECLARATION_NODE_TYPES,
   extractDeclaration,
   extractParameter,
+  extractInitializer,
 };

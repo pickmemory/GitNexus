@@ -1,5 +1,5 @@
 import type { SyntaxNode } from '../utils.js';
-import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor } from './types.js';
+import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor } from './types.js';
 import { extractSimpleTypeName, extractVarName } from './shared.js';
 
 const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
@@ -37,8 +37,30 @@ const extractParameter: ParameterExtractor = (node: SyntaxNode, env: Map<string,
   if (varName && typeName) env.set(varName, typeName);
 };
 
+/** Python: user = User("alice") — infer type from call when callee is a known class.
+ *  Python constructors are syntactically identical to function calls, so we verify
+ *  against classNames (which may include cross-file SymbolTable lookups). */
+const extractInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<string, string>, classNames: ReadonlySet<string>): void => {
+  if (node.type !== 'assignment') return;
+  const left = node.childForFieldName('left');
+  const right = node.childForFieldName('right');
+  if (!left || !right) return;
+  // Skip if already has type annotation — extractDeclaration handled it
+  if (node.childForFieldName('type')) return;
+  const varName = extractVarName(left);
+  if (!varName || env.has(varName)) return;
+  if (right.type !== 'call') return;
+  const func = right.childForFieldName('function');
+  if (!func || func.type !== 'identifier') return;
+  const calleeName = func.text;
+  if (calleeName && classNames.has(calleeName)) {
+    env.set(varName, calleeName);
+  }
+};
+
 export const typeConfig: LanguageTypeConfig = {
   declarationNodeTypes: DECLARATION_NODE_TYPES,
   extractDeclaration,
   extractParameter,
+  extractInitializer,
 };
