@@ -6,6 +6,8 @@ import { loadParser, loadLanguage } from '../tree-sitter/parser-loader';
 import { LANGUAGE_QUERIES } from './tree-sitter-queries';
 import { generateId } from '../../lib/utils';
 import { getLanguageFromFilename } from './utils';
+import { SupportedLanguages } from '../../config/supported-languages';
+import { routeRubyCall } from './ruby-call-routing';
 
 /**
  * Node types that represent function/method definitions across languages.
@@ -35,6 +37,9 @@ const FUNCTION_NODE_TYPES = new Set([
   // Rust
   'function_item',
   'impl_item', // Methods inside impl blocks
+  // Ruby
+  'method',           // def foo
+  'singleton_method', // def self.foo
 ]);
 
 /**
@@ -92,6 +97,18 @@ const findEnclosingFunction = (
                          current.children?.find((c: any) => c.type === 'identifier');
         funcName = nameNode?.text;
         label = 'Method'; // Treat constructors as methods for process detection
+      } else if (current.type === 'method') {
+        // Ruby instance method: def foo
+        const nameNode = current.childForFieldName?.('name') ||
+                         current.children?.find((c: any) => c.type === 'identifier');
+        funcName = nameNode?.text;
+        label = 'Method';
+      } else if (current.type === 'singleton_method') {
+        // Ruby class method: def self.foo
+        const nameNode = current.childForFieldName?.('name') ||
+                         current.children?.find((c: any) => c.type === 'identifier');
+        funcName = nameNode?.text;
+        label = 'Function';
       } else if (current.type === 'arrow_function' || current.type === 'function_expression') {
         // Arrow/expression: const foo = () => {} - check parent variable declarator
         const parent = current.parent;
@@ -184,6 +201,62 @@ export const processCalls = async (
 
       const calledName = nameNode.text;
 
+      // Ruby: route special calls to heritage or properties (imports handled by import-processor)
+      if (language === SupportedLanguages.Ruby) {
+        const callNode = captureMap['call'];
+        const routed = routeRubyCall(calledName, callNode);
+
+        switch (routed.kind) {
+          case 'skip':
+          case 'import': // handled by import-processor
+            return;
+
+          case 'heritage':
+            for (const item of routed.items) {
+              const childId = symbolTable.lookupExact(file.path, item.enclosingClass) ||
+                              symbolTable.lookupFuzzy(item.enclosingClass)[0]?.nodeId ||
+                              generateId('Class', `${file.path}:${item.enclosingClass}`);
+              const parentId = symbolTable.lookupFuzzy(item.mixinName)[0]?.nodeId ||
+                               generateId('Module', `${item.mixinName}`);
+              if (childId && parentId) {
+                const relId = generateId('IMPLEMENTS', `${childId}->${parentId}`);
+                graph.addRelationship({
+                  id: relId, sourceId: childId, targetId: parentId,
+                  type: 'IMPLEMENTS', confidence: 1.0, reason: 'trait-impl',
+                });
+              }
+            }
+            return;
+
+          case 'properties': {
+            const fileId = generateId('File', file.path);
+            for (const item of routed.items) {
+              const nodeId = generateId('Property', `${file.path}:${item.propName}`);
+              graph.addNode({
+                id: nodeId,
+                label: 'Property' as any, // TODO: add 'Property' to graph node label union
+                properties: {
+                  name: item.propName, filePath: file.path,
+                  startLine: item.startLine, endLine: item.endLine,
+                  language: SupportedLanguages.Ruby, isExported: true,
+                  description: item.accessorType,
+                },
+              });
+              symbolTable.add(file.path, item.propName, nodeId, 'Property');
+              const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
+              graph.addRelationship({
+                id: relId, sourceId: fileId, targetId: nodeId,
+                type: 'DEFINES', confidence: 1.0, reason: '',
+              });
+            }
+            return;
+          }
+
+          case 'call':
+            break; // fall through to normal call processing below
+        }
+      }
+
       // Skip common built-ins and noise
       if (isBuiltInOrNoise(calledName)) return;
 
@@ -200,10 +273,10 @@ export const processCalls = async (
       // 5. Find the enclosing function (caller)
       const callNode = captureMap['call'];
       const enclosingFuncId = findEnclosingFunction(callNode, file.path, symbolTable);
-      
+
       // Use enclosing function as source, fallback to file for top-level calls
       const sourceId = enclosingFuncId || generateId('File', file.path);
-      
+
       const relId = generateId('CALLS', `${sourceId}:${calledName}->${resolved.nodeId}`);
 
       graph.addRelationship({
@@ -711,37 +784,72 @@ const resolveCallTarget = (
  * Filter out common built-in functions and noise
  * that shouldn't be tracked as calls
  */
-const isBuiltInOrNoise = (name: string): boolean => {
-  const builtIns = new Set([
-    // JavaScript/TypeScript built-ins
-    'console', 'log', 'warn', 'error', 'info', 'debug',
-    'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval',
-    'parseInt', 'parseFloat', 'isNaN', 'isFinite',
-    'encodeURI', 'decodeURI', 'encodeURIComponent', 'decodeURIComponent',
-    'JSON', 'parse', 'stringify',
-    'Object', 'Array', 'String', 'Number', 'Boolean', 'Symbol', 'BigInt',
-    'Map', 'Set', 'WeakMap', 'WeakSet',
-    'Promise', 'resolve', 'reject', 'then', 'catch', 'finally',
-    'Math', 'Date', 'RegExp', 'Error',
-    'require', 'import', 'export',
-    'fetch', 'Response', 'Request',
-    // React hooks and common functions
-    'useState', 'useEffect', 'useCallback', 'useMemo', 'useRef', 'useContext',
-    'useReducer', 'useLayoutEffect', 'useImperativeHandle', 'useDebugValue',
-    'createElement', 'createContext', 'createRef', 'forwardRef', 'memo', 'lazy',
-    // Common array/object methods
-    'map', 'filter', 'reduce', 'forEach', 'find', 'findIndex', 'some', 'every',
-    'includes', 'indexOf', 'slice', 'splice', 'concat', 'join', 'split',
-    'push', 'pop', 'shift', 'unshift', 'sort', 'reverse',
-    'keys', 'values', 'entries', 'assign', 'freeze', 'seal',
-    'hasOwnProperty', 'toString', 'valueOf',
-    // Python built-ins
-    'print', 'len', 'range', 'str', 'int', 'float', 'list', 'dict', 'set', 'tuple',
-    'open', 'read', 'write', 'close', 'append', 'extend', 'update',
-    'super', 'type', 'isinstance', 'issubclass', 'getattr', 'setattr', 'hasattr',
-    'enumerate', 'zip', 'sorted', 'reversed', 'min', 'max', 'sum', 'abs',
-  ]);
+/** Pre-built set (module-level singleton) to avoid re-creating per call */
+const BUILT_IN_NAMES = new Set([
+  // JavaScript/TypeScript built-ins
+  'console', 'log', 'warn', 'error', 'info', 'debug',
+  'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval',
+  'parseInt', 'parseFloat', 'isNaN', 'isFinite',
+  'encodeURI', 'decodeURI', 'encodeURIComponent', 'decodeURIComponent',
+  'JSON', 'parse', 'stringify',
+  'Object', 'Array', 'String', 'Number', 'Boolean', 'Symbol', 'BigInt',
+  'Map', 'Set', 'WeakMap', 'WeakSet',
+  'Promise', 'resolve', 'reject', 'then', 'catch', 'finally',
+  'Math', 'Date', 'RegExp', 'Error',
+  'require', 'import', 'export',
+  'fetch', 'Response', 'Request',
+  // React hooks and common functions
+  'useState', 'useEffect', 'useCallback', 'useMemo', 'useRef', 'useContext',
+  'useReducer', 'useLayoutEffect', 'useImperativeHandle', 'useDebugValue',
+  'createElement', 'createContext', 'createRef', 'forwardRef', 'memo', 'lazy',
+  // Common array/object methods
+  'map', 'filter', 'reduce', 'forEach', 'find', 'findIndex', 'some', 'every',
+  'includes', 'indexOf', 'slice', 'splice', 'concat', 'join', 'split',
+  'push', 'pop', 'shift', 'unshift', 'sort', 'reverse',
+  'keys', 'values', 'entries', 'assign', 'freeze', 'seal',
+  'hasOwnProperty', 'toString', 'valueOf',
+  // Python built-ins
+  'print', 'len', 'range', 'str', 'int', 'float', 'list', 'dict', 'set', 'tuple',
+  'open', 'read', 'write', 'close', 'append', 'extend', 'update',
+  'super', 'type', 'isinstance', 'issubclass', 'getattr', 'setattr', 'hasattr',
+  'enumerate', 'zip', 'sorted', 'reversed', 'min', 'max', 'sum', 'abs',
+  // C/C++ standard library and common kernel helpers
+  'printf', 'fprintf', 'sprintf', 'snprintf', 'vprintf', 'vfprintf', 'vsprintf', 'vsnprintf',
+  'scanf', 'fscanf', 'sscanf',
+  'malloc', 'calloc', 'realloc', 'free', 'memcpy', 'memmove', 'memset', 'memcmp',
+  'strlen', 'strcpy', 'strncpy', 'strcat', 'strncat', 'strcmp', 'strncmp', 'strstr', 'strchr', 'strrchr',
+  'atoi', 'atol', 'atof', 'strtol', 'strtoul', 'strtoll', 'strtoull', 'strtod',
+  'sizeof', 'offsetof', 'typeof',
+  'assert', 'abort', 'exit', '_exit',
+  'fopen', 'fclose', 'fread', 'fwrite', 'fseek', 'ftell', 'rewind', 'fflush', 'fgets', 'fputs',
+  // Linux kernel common macros/helpers (not real call targets)
+  'likely', 'unlikely', 'BUG', 'BUG_ON', 'WARN', 'WARN_ON', 'WARN_ONCE',
+  'IS_ERR', 'PTR_ERR', 'ERR_PTR', 'IS_ERR_OR_NULL',
+  'ARRAY_SIZE', 'container_of', 'list_for_each_entry', 'list_for_each_entry_safe',
+  'min', 'max', 'clamp', 'abs', 'swap',
+  'pr_info', 'pr_warn', 'pr_err', 'pr_debug', 'pr_notice', 'pr_crit', 'pr_emerg',
+  'printk', 'dev_info', 'dev_warn', 'dev_err', 'dev_dbg',
+  'GFP_KERNEL', 'GFP_ATOMIC',
+  'spin_lock', 'spin_unlock', 'spin_lock_irqsave', 'spin_unlock_irqrestore',
+  'mutex_lock', 'mutex_unlock', 'mutex_init',
+  'kfree', 'kmalloc', 'kzalloc', 'kcalloc', 'krealloc', 'kvmalloc', 'kvfree',
+  'get', 'put',
+  // Ruby built-ins and Kernel methods
+  'puts', 'print', 'p', 'pp', 'warn', 'raise', 'fail',
+  'require', 'require_relative', 'load', 'autoload',
+  'include', 'extend', 'prepend',
+  'attr_accessor', 'attr_reader', 'attr_writer',
+  'public', 'private', 'protected', 'module_function',
+  'lambda', 'proc', 'block_given?',
+  'nil?', 'is_a?', 'kind_of?', 'instance_of?', 'respond_to?',
+  'freeze', 'frozen?', 'dup', 'clone', 'tap', 'then', 'yield_self',
+  // Ruby enumerables
+  'each', 'map', 'select', 'reject', 'find', 'detect', 'collect',
+  'inject', 'reduce', 'flat_map', 'each_with_object', 'each_with_index',
+  'any?', 'all?', 'none?', 'count', 'first', 'last',
+  'sort', 'sort_by', 'min', 'max', 'min_by', 'max_by',
+  'group_by', 'partition', 'zip', 'compact', 'flatten', 'uniq',
+]);
 
-  return builtIns.has(name);
-};
+const isBuiltInOrNoise = (name: string): boolean => BUILT_IN_NAMES.has(name);
 
